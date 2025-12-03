@@ -1,12 +1,16 @@
-from fastapi import FastAPI, HTTPException, Request, status
+“””
+Healthcare Appointment Webhook Receiver
+Main application entry point
+“””
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
-from datetime import datetime
-from typing import Optional
-import sqlite3
+from contextlib import asynccontextmanager
 import logging
-import json
-from contextlib import contextmanager
+from datetime import datetime
+
+from models import AppointmentEvent, ValidationError
+from db import Database
+from validators import validate_appointment_event
 
 # Configure logging
 
@@ -14,258 +18,153 @@ logging.basicConfig(
 level=logging.INFO,
 format=’%(asctime)s - %(name)s - %(levelname)s - %(message)s’,
 handlers=[
-logging.FileHandler(‘webhook_events.log’),
+logging.FileHandler(‘webhook.log’),
 logging.StreamHandler()
 ]
 )
 logger = logging.getLogger(**name**)
 
+# Database instance
+
+db = Database()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+“”“Initialize database on startup, cleanup on shutdown”””
+logger.info(“Starting webhook service…”)
+db.initialize()
+logger.info(“Database initialized”)
+yield
+logger.info(“Shutting down webhook service…”)
+
 app = FastAPI(
-title=“Appointment Webhook API”,
-description=“Webhook endpoint for receiving appointment events”,
-version=“1.0.0”
+title=“Healthcare Appointment Webhook”,
+description=“Webhook receiver for healthcare appointment events”,
+version=“1.0.0”,
+lifespan=lifespan
 )
 
-# Database setup
-
-DB_NAME = “appointments.db”
-
-def init_db():
-“”“Initialize SQLite database with appointments table”””
-with sqlite3.connect(DB_NAME) as conn:
-cursor = conn.cursor()
-cursor.execute(”””
-CREATE TABLE IF NOT EXISTS appointment_events (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-event_type TEXT NOT NULL,
-appointment_id TEXT NOT NULL,
-patient_id TEXT NOT NULL,
-timestamp TEXT NOT NULL,
-notes TEXT,
-received_at TEXT NOT NULL,
-raw_payload TEXT NOT NULL
-)
-“””)
-conn.commit()
-logger.info(“Database initialized successfully”)
-
-# Initialize database on startup
-
-init_db()
-
-@contextmanager
-def get_db():
-“”“Context manager for database connections”””
-conn = sqlite3.connect(DB_NAME)
-try:
-yield conn
-finally:
-conn.close()
-
-# Pydantic model for request validation
-
-class AppointmentEvent(BaseModel):
-event_type: str = Field(
-…,
-description=“Type of appointment event”,
-min_length=1,
-max_length=100
-)
-appointment_id: str = Field(
-…,
-description=“Unique appointment identifier”,
-min_length=1,
-max_length=50
-)
-patient_id: str = Field(
-…,
-description=“Unique patient identifier”,
-min_length=1,
-max_length=50
-)
-timestamp: str = Field(
-…,
-description=“ISO 8601 formatted timestamp”
-)
-notes: Optional[str] = Field(
-None,
-description=“Optional notes about the appointment”,
-max_length=1000
-)
-
-```
-@validator('event_type')
-def validate_event_type(cls, v):
-    """Validate event_type follows expected pattern"""
-    allowed_types = [
-        'appointment.scheduled',
-        'appointment.cancelled',
-        'appointment.rescheduled',
-        'appointment.completed',
-        'appointment.no_show'
-    ]
-    if v not in allowed_types:
-        raise ValueError(
-            f"event_type must be one of: {', '.join(allowed_types)}"
-        )
-    return v
-
-@validator('timestamp')
-def validate_timestamp(cls, v):
-    """Validate timestamp is valid ISO 8601 format"""
-    try:
-        datetime.fromisoformat(v.replace('Z', '+00:00'))
-    except (ValueError, AttributeError):
-        raise ValueError(
-            "timestamp must be in ISO 8601 format (e.g., 2025-01-10T12:30:00Z)"
-        )
-    return v
-
-class Config:
-    schema_extra = {
-        "example": {
-            "event_type": "appointment.scheduled",
-            "appointment_id": "A12345",
-            "patient_id": "P8765",
-            "timestamp": "2025-01-10T12:30:00Z",
-            "notes": "Annual physical"
-        }
-    }
-```
-
-def store_event(event: AppointmentEvent, raw_payload: dict) -> int:
-“”“Store event in SQLite database”””
-with get_db() as conn:
-cursor = conn.cursor()
-cursor.execute(”””
-INSERT INTO appointment_events
-(event_type, appointment_id, patient_id, timestamp, notes, received_at, raw_payload)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-“””, (
-event.event_type,
-event.appointment_id,
-event.patient_id,
-event.timestamp,
-event.notes,
-datetime.utcnow().isoformat(),
-json.dumps(raw_payload)
-))
-conn.commit()
-return cursor.lastrowid
-
-@app.get(”/”, tags=[“Health”])
+@app.get(”/”)
 async def root():
 “”“Health check endpoint”””
 return {
-“status”: “healthy”,
-“service”: “Appointment Webhook API”,
-“version”: “1.0.0”
+“service”: “Healthcare Appointment Webhook”,
+“status”: “running”,
+“timestamp”: datetime.utcnow().isoformat()
 }
 
-@app.post(
-“/webhook/appointment”,
-status_code=status.HTTP_201_CREATED,
-tags=[“Webhook”]
-)
-async def receive_appointment_event(event: AppointmentEvent, request: Request):
+@app.post(”/webhook/appointments”, status_code=status.HTTP_200_OK)
+async def receive_appointment_webhook(request: Request):
 “””
-Receive and process appointment events
+Receive and process healthcare appointment webhook events
 
 ```
-Required fields:
-- event_type: Type of event (appointment.scheduled, etc.)
-- appointment_id: Unique appointment identifier
-- patient_id: Unique patient identifier
-- timestamp: ISO 8601 formatted timestamp
+Accepts POST requests with appointment event data and:
+- Validates the payload structure
+- Checks for duplicate events
+- Logs the event
+- Stores valid events in the database
 
-Optional fields:
-- notes: Additional notes about the appointment
+Returns:
+    200: Event accepted and stored
+    400: Invalid payload
+    409: Duplicate event
+    500: Internal server error
 """
+request_id = datetime.utcnow().isoformat()
+
 try:
-    # Get raw JSON for logging
-    raw_payload = await request.json()
+    # Parse request body
+    try:
+        payload = await request.json()
+        logger.info(f"[{request_id}] Received webhook payload: {payload}")
+    except Exception as e:
+        logger.error(f"[{request_id}] Failed to parse JSON: {str(e)}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": "Invalid JSON",
+                "message": "Request body must be valid JSON",
+                "request_id": request_id
+            }
+        )
     
-    # Log the incoming event
-    logger.info(
-        f"Received {event.event_type} event - "
-        f"Appointment: {event.appointment_id}, Patient: {event.patient_id}"
-    )
+    # Validate payload
+    try:
+        event = validate_appointment_event(payload)
+        logger.info(f"[{request_id}] Validation successful for appointment {event.appointment_id}")
+    except ValidationError as e:
+        logger.warning(f"[{request_id}] Validation failed: {str(e)}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": "Validation failed",
+                "message": str(e),
+                "request_id": request_id
+            }
+        )
     
-    # Store in database
-    event_id = store_event(event, raw_payload)
+    # Check for duplicate
+    if db.event_exists(event.appointment_id, event.timestamp):
+        logger.warning(f"[{request_id}] Duplicate event detected: {event.appointment_id}")
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": "Duplicate event",
+                "message": f"Event for appointment {event.appointment_id} at {event.timestamp} already exists",
+                "request_id": request_id
+            }
+        )
     
-    # Return success response
+    # Store event
+    event_id = db.store_event(event)
+    logger.info(f"[{request_id}] Event stored successfully with ID: {event_id}")
+    
     return {
-        "status": "success",
-        "message": "Event received and stored successfully",
+        "status": "accepted",
+        "message": "Appointment event received and stored",
         "event_id": event_id,
-        "received_at": datetime.utcnow().isoformat(),
-        "data": {
-            "event_type": event.event_type,
-            "appointment_id": event.appointment_id,
-            "patient_id": event.patient_id
-        }
+        "appointment_id": event.appointment_id,
+        "request_id": request_id
     }
     
 except Exception as e:
-    logger.error(f"Error processing event: {str(e)}", exc_info=True)
-    raise HTTPException(
+    logger.error(f"[{request_id}] Unexpected error: {str(e)}", exc_info=True)
+    return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Internal server error while processing event"
-    )
-```
-
-@app.get(”/webhook/events”, tags=[“Admin”])
-async def list_events(limit: int = 50):
-“”“Retrieve stored events (for testing/admin purposes)”””
-try:
-with get_db() as conn:
-cursor = conn.cursor()
-cursor.execute(”””
-SELECT id, event_type, appointment_id, patient_id,
-timestamp, notes, received_at
-FROM appointment_events
-ORDER BY received_at DESC
-LIMIT ?
-“””, (limit,))
-
-```
-        events = []
-        for row in cursor.fetchall():
-            events.append({
-                "id": row[0],
-                "event_type": row[1],
-                "appointment_id": row[2],
-                "patient_id": row[3],
-                "timestamp": row[4],
-                "notes": row[5],
-                "received_at": row[6]
-            })
-        
-        return {
-            "total": len(events),
-            "events": events
+        content={
+            "error": "Internal server error",
+            "message": "An unexpected error occurred while processing the event",
+            "request_id": request_id
         }
-except Exception as e:
-    logger.error(f"Error retrieving events: {str(e)}")
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Error retrieving events"
     )
 ```
 
-@app.exception_handler(422)
-async def validation_exception_handler(request: Request, exc):
-“”“Custom handler for validation errors”””
-logger.warning(f”Validation error: {exc}”)
-return JSONResponse(
-status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-content={
-“status”: “error”,
-“message”: “Invalid payload structure”,
-“errors”: exc.errors() if hasattr(exc, ‘errors’) else str(exc)
-}
-)
+@app.get(”/events”, status_code=status.HTTP_200_OK)
+async def list_events(limit: int = 100):
+“””
+List stored appointment events (for testing/debugging)
+
+```
+Args:
+    limit: Maximum number of events to return (default: 100)
+"""
+try:
+    events = db.get_events(limit=limit)
+    return {
+        "count": len(events),
+        "events": events
+    }
+except Exception as e:
+    logger.error(f"Failed to retrieve events: {str(e)}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "Failed to retrieve events",
+            "message": str(e)
+        }
+    )
+```
 
 if **name** == “**main**”:
 import uvicorn
