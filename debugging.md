@@ -1,600 +1,647 @@
-# Debugging and Testing Guide
+# Debugging Guide
 
-## Testing the Webhook Locally
+This guide helps you troubleshoot common issues with the Healthcare Appointment Webhook Receiver.
 
-### Start the Server
+-----
+
+## Quick Diagnostics
+
+### Is the service running?
 
 ```bash
+curl http://localhost:8000/
+```
+
+**Expected:**
+
+```json
+{
+  "service": "Healthcare Appointment Webhook",
+  "status": "running",
+  ...
+}
+```
+
+**If connection refused:**
+
+- Check if Python process is running: `ps aux | grep python`
+- Verify port 8000 is not in use: `lsof -i :8000` (macOS/Linux)
+- Check service logs in `webhook.log`
+
+-----
+
+## Common Issues
+
+### 1. “Connection refused” or “Cannot connect”
+
+**Problem:** The service isn’t running or is on a different port.
+
+**Solutions:**
+
+```bash
+# Check if service is running
+ps aux | grep webhook.py
+
+# Start the service if not running
 python webhook.py
+
+# Check which port is being used
+lsof -i :8000  # macOS/Linux
+netstat -ano | findstr :8000  # Windows
 ```
 
-Server runs on `http://localhost:8000`
+**If port 8000 is already in use:**
 
-### Interactive API Documentation
+Edit `webhook.py` and change the port:
 
-Visit these URLs for automatic testing interfaces:
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-
-## Test Cases
-
-### ✅ Test Case 1: Valid Scheduled Appointment
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.scheduled",
-    "appointment_id": "A12345",
-    "patient_id": "P8765",
-    "timestamp": "2025-01-10T12:30:00Z",
-    "notes": "Annual physical"
-  }'
+```python
+# At the bottom of webhook.py
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)  # Change to 8001
 ```
 
-**Expected Response (201):**
+-----
+
+### 2. “Invalid JSON” (400)
+
+**Problem:** Request body is not valid JSON.
+
+**Common Causes:**
+
+❌ **Missing quotes around keys:**
 
 ```json
 {
-  "status": "success",
-  "message": "Event received and stored successfully",
-  "event_id": 1,
-  "received_at": "2025-12-03T10:15:30.123456",
-  "data": {
-    "event_type": "appointment.scheduled",
-    "appointment_id": "A12345",
-    "patient_id": "P8765"
-  }
+  event_type: "appointment.scheduled"  // WRONG
 }
 ```
 
-### ✅ Test Case 2: Valid Cancelled Appointment
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.cancelled",
-    "appointment_id": "A12346",
-    "patient_id": "P8766",
-    "timestamp": "2025-01-11T09:00:00Z",
-    "notes": "Patient requested cancellation"
-  }'
-```
-
-### ✅ Test Case 3: Valid Rescheduled Appointment
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.rescheduled",
-    "appointment_id": "A12347",
-    "patient_id": "P8767",
-    "timestamp": "2025-01-12T15:00:00Z",
-    "notes": "Moved from original time slot"
-  }'
-```
-
-### ✅ Test Case 4: Valid Completed Appointment
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.completed",
-    "appointment_id": "A12348",
-    "patient_id": "P8768",
-    "timestamp": "2025-01-09T14:30:00Z"
-  }'
-```
-
-### ✅ Test Case 5: Valid No-Show Event
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.no_show",
-    "appointment_id": "A12349",
-    "patient_id": "P8769",
-    "timestamp": "2025-01-08T10:00:00Z",
-    "notes": "Patient did not arrive"
-  }'
-```
-
-### ✅ Test Case 6: Valid Request Without Notes
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.completed",
-    "appointment_id": "A12350",
-    "patient_id": "P8770",
-    "timestamp": "2025-01-09T16:00:00Z"
-  }'
-```
-
-## Error Test Cases
-
-### ❌ Error Test 1: Missing Required Field (appointment_id)
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.scheduled",
-    "patient_id": "P8765",
-    "timestamp": "2025-01-10T12:30:00Z"
-  }'
-```
-
-**Expected Response (422):**
+✅ **Correct:**
 
 ```json
 {
-  "status": "error",
-  "message": "Invalid payload structure",
-  "errors": [
-    {
-      "loc": ["body", "appointment_id"],
-      "msg": "field required",
-      "type": "value_error.missing"
-    }
-  ]
+  "event_type": "appointment.scheduled"  // RIGHT
 }
 ```
 
-### ❌ Error Test 2: Invalid Event Type
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.deleted",
-    "appointment_id": "A12345",
-    "patient_id": "P8765",
-    "timestamp": "2025-01-10T12:30:00Z"
-  }'
-```
-
-**Expected Response (422):**
-
-```json
-{
-  "status": "error",
-  "message": "Invalid payload structure",
-  "errors": [
-    {
-      "loc": ["body", "event_type"],
-      "msg": "event_type must be one of: appointment.scheduled, appointment.cancelled, appointment.rescheduled, appointment.completed, appointment.no_show",
-      "type": "value_error"
-    }
-  ]
-}
-```
-
-### ❌ Error Test 3: Invalid Timestamp Format
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.scheduled",
-    "appointment_id": "A12345",
-    "patient_id": "P8765",
-    "timestamp": "01/10/2025 12:30 PM"
-  }'
-```
-
-**Expected Response (422):**
-
-```json
-{
-  "status": "error",
-  "message": "Invalid payload structure",
-  "errors": [
-    {
-      "loc": ["body", "timestamp"],
-      "msg": "timestamp must be in ISO 8601 format (e.g., 2025-01-10T12:30:00Z)",
-      "type": "value_error"
-    }
-  ]
-}
-```
-
-### ❌ Error Test 4: Empty String for Required Field
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.scheduled",
-    "appointment_id": "",
-    "patient_id": "P8765",
-    "timestamp": "2025-01-10T12:30:00Z"
-  }'
-```
-
-**Expected Response (422):**
-
-```json
-{
-  "status": "error",
-  "message": "Invalid payload structure",
-  "errors": [
-    {
-      "loc": ["body", "appointment_id"],
-      "msg": "ensure this value has at least 1 characters",
-      "type": "value_error.any_str.min_length"
-    }
-  ]
-}
-```
-
-### ❌ Error Test 5: Notes Too Long (>1000 characters)
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"event_type\": \"appointment.scheduled\",
-    \"appointment_id\": \"A12345\",
-    \"patient_id\": \"P8765\",
-    \"timestamp\": \"2025-01-10T12:30:00Z\",
-    \"notes\": \"$(python -c 'print("x" * 1001)')\"
-  }"
-```
-
-**Expected Response (422):**
-
-```json
-{
-  "status": "error",
-  "message": "Invalid payload structure",
-  "errors": [
-    {
-      "loc": ["body", "notes"],
-      "msg": "ensure this value has at most 1000 characters",
-      "type": "value_error.any_str.max_length"
-    }
-  ]
-}
-```
-
-### ❌ Error Test 6: Invalid JSON
-
-```bash
-curl -X POST http://localhost:8000/webhook/appointment \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "appointment.scheduled"
-    "appointment_id": "A12345"
-  }'
-```
-
-**Expected Response (422):**
-
-```json
-{
-  "detail": [
-    {
-      "loc": ["body"],
-      "msg": "Expecting ',' delimiter",
-      "type": "value_error.jsondecode"
-    }
-  ]
-}
-```
-
-## Postman Testing
-
-### Import Collection
-
-Create a new Postman collection with these requests:
-
-#### 1. Valid Scheduled Appointment
-
-- **Method**: POST
-- **URL**: `http://localhost:8000/webhook/appointment`
-- **Headers**: `Content-Type: application/json`
-- **Body**:
+❌ **Trailing commas:**
 
 ```json
 {
   "event_type": "appointment.scheduled",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z",
-  "notes": "Annual physical"
+  "appointment_id": "A001",  // WRONG - trailing comma
 }
 ```
 
-#### 2. Invalid - Missing Field
-
-- **Body**:
+✅ **Correct:**
 
 ```json
 {
   "event_type": "appointment.scheduled",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z"
+  "appointment_id": "A001"  // RIGHT - no trailing comma
 }
 ```
 
-#### 3. Invalid - Wrong Event Type
-
-- **Body**:
+❌ **Single quotes instead of double:**
 
 ```json
 {
-  "event_type": "appointment.unknown",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z"
+  'event_type': 'appointment.scheduled'  // WRONG
 }
 ```
 
-### Postman Test Scripts
-
-Add to the **Tests** tab:
-
-```javascript
-// Test for successful response
-pm.test("Status code is 201", function () {
-    pm.response.to.have.status(201);
-});
-
-pm.test("Response has success status", function () {
-    var jsonData = pm.response.json();
-    pm.expect(jsonData.status).to.eql("success");
-});
-
-pm.test("Response contains event_id", function () {
-    var jsonData = pm.response.json();
-    pm.expect(jsonData.event_id).to.be.a('number');
-});
-
-pm.test("Response contains received_at timestamp", function () {
-    var jsonData = pm.response.json();
-    pm.expect(jsonData.received_at).to.be.a('string');
-});
-
-// Test for error responses
-if (pm.response.code === 422) {
-    pm.test("Error response has proper structure", function () {
-        var jsonData = pm.response.json();
-        pm.expect(jsonData.status).to.eql("error");
-        pm.expect(jsonData.errors).to.be.an('array');
-    });
-}
-```
-
-## Admin Endpoints
-
-### View All Stored Events
+**Debug Command:**
 
 ```bash
-curl -X GET http://localhost:8000/webhook/events
+# Validate your JSON first
+echo '{"your": "json"}' | python -m json.tool
 ```
 
-**Response:**
+-----
+
+### 3. “Missing required fields” (400)
+
+**Problem:** One or more required fields are missing.
+
+**Required Fields:**
+
+- `event_type`
+- `appointment_id`
+- `patient_id`
+- `timestamp`
+
+**Check Your Payload:**
+
+```bash
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": "A001",
+    "patient_id": "P001",
+    "timestamp": "2025-01-10T12:30:00Z"
+  }'
+```
+
+**Error Message Shows Missing Fields:**
 
 ```json
 {
-  "total": 5,
-  "events": [
-    {
-      "id": 5,
-      "event_type": "appointment.scheduled",
-      "appointment_id": "A12345",
-      "patient_id": "P8765",
-      "timestamp": "2025-01-10T12:30:00Z",
-      "notes": "Annual physical",
-      "received_at": "2025-12-03T10:15:30.123456"
-    }
-  ]
+  "error": "Validation failed",
+  "message": "Missing required fields: patient_id, timestamp"
 }
 ```
 
-### View Limited Events
+Fix by adding the missing fields.
 
-```bash
-curl -X GET "http://localhost:8000/webhook/events?limit=10"
+-----
+
+### 4. “Invalid event_type” (400)
+
+**Problem:** The `event_type` value is not one of the allowed values.
+
+**Valid Values:**
+
+- `appointment.scheduled`
+- `appointment.cancelled`
+- `appointment.updated`
+
+**Common Mistakes:**
+
+❌ Wrong:
+
+```json
+"event_type": "scheduled"           // Missing prefix
+"event_type": "appointment_scheduled"  // Underscore instead of dot
+"event_type": "appointment.deleted"    // Not a valid type
 ```
 
-### Health Check
+✅ Correct:
 
-```bash
-curl -X GET http://localhost:8000/
+```json
+"event_type": "appointment.scheduled"
 ```
 
-**Response:**
+-----
+
+### 5. “Invalid timestamp format” (400)
+
+**Problem:** Timestamp is not in ISO 8601 format.
+
+**Valid Formats:**
+
+✅ Correct:
+
+```json
+"timestamp": "2025-01-10T12:30:00Z"           // UTC
+"timestamp": "2025-01-10T12:30:00.123Z"       // With milliseconds
+"timestamp": "2025-01-10T07:30:00-05:00"      // With timezone offset
+```
+
+❌ Wrong:
+
+```json
+"timestamp": "2025-01-10"                      // Missing time
+"timestamp": "2025-01-10 12:30:00"            // Missing T separator
+"timestamp": "01/10/2025 12:30 PM"            // Wrong format
+"timestamp": "2025-01-10T12:30:00"            // Missing timezone
+```
+
+**Generate Valid Timestamp:**
+
+```bash
+# In terminal
+date -u +%Y-%m-%dT%H:%M:%SZ
+
+# In Python
+from datetime import datetime
+datetime.utcnow().isoformat() + "Z"
+
+# In JavaScript
+new Date().toISOString()
+```
+
+-----
+
+### 6. “Field must be a string” (400)
+
+**Problem:** Field type doesn’t match expected type.
+
+**All fields must be strings:**
+
+❌ Wrong:
 
 ```json
 {
-  "status": "healthy",
-  "service": "Appointment Webhook API",
-  "version": "1.0.0"
+  "appointment_id": 12345,  // Number instead of string
+  "patient_id": true        // Boolean instead of string
 }
 ```
 
-## Log Analysis
+✅ Correct:
 
-### Log Location
-
-- **File**: `webhook_events.log`
-- **Console**: Real-time output during server runtime
-
-### Log Format
-
-```
-2025-12-03 10:15:30 - __main__ - INFO - Received appointment.scheduled event - Appointment: A12345, Patient: P8765
-2025-12-03 10:16:45 - __main__ - WARNING - Validation error: <error details>
-2025-12-03 10:17:12 - __main__ - ERROR - Error processing event: <error message>
+```json
+{
+  "appointment_id": "12345",  // String
+  "patient_id": "P001"        // String
+}
 ```
 
-### Common Log Messages
+-----
 
-**Successful Event:**
+### 7. “Duplicate event” (409)
+
+**Problem:** Event with same `appointment_id` and `timestamp` already exists.
+
+**This is by design** to prevent duplicate processing.
+
+**Understanding:**
+
+```json
+// First request - SUCCESS (200)
+{"appointment_id": "A001", "timestamp": "2025-01-10T10:00:00Z"}
+
+// Same request again - DUPLICATE (409)
+{"appointment_id": "A001", "timestamp": "2025-01-10T10:00:00Z"}
+
+// Different timestamp - SUCCESS (200)
+{"appointment_id": "A001", "timestamp": "2025-01-10T11:00:00Z"}
+```
+
+**Solutions:**
+
+1. **If this is a retry:** Consider it successful (event already processed)
+1. **If this is an update:** Use `event_type: "appointment.updated"` with new timestamp
+1. **If you need to resend:** Change the timestamp to current time
+
+**Check Existing Events:**
+
+```bash
+curl http://localhost:8000/events | python -m json.tool
+```
+
+-----
+
+### 8. “Cannot be empty or whitespace” (400)
+
+**Problem:** `appointment_id` or `patient_id` is empty string or only whitespace.
+
+❌ Wrong:
+
+```json
+{
+  "appointment_id": "",        // Empty
+  "patient_id": "   "          // Only whitespace
+}
+```
+
+✅ Correct:
+
+```json
+{
+  "appointment_id": "A001",
+  "patient_id": "P001"
+}
+```
+
+-----
+
+### 9. Database Locked Error (500)
+
+**Problem:** SQLite database is locked.
+
+**Common Causes:**
+
+- Database file open in SQLite browser/tool
+- Multiple processes accessing database
+- File permission issues
+
+**Solutions:**
+
+```bash
+# Close any SQLite GUI tools
+# Check who's using the database
+lsof appointments.db
+
+# Restart the service
+pkill -f webhook.py
+python webhook.py
+
+# If persist, delete and recreate
+rm appointments.db
+python webhook.py  # Will auto-create new database
+```
+
+-----
+
+### 10. Module Not Found Error
+
+**Problem:** Missing Python dependencies.
 
 ```
-INFO - Received appointment.scheduled event - Appointment: A12345, Patient: P8765
-```
-
-**Validation Error:**
-
-```
-WARNING - Validation error: 1 validation error for AppointmentEvent
-appointment_id
-  field required (type=value_error.missing)
-```
-
-**Server Error:**
-
-```
-ERROR - Error processing event: Database connection failed
-```
-
-## Common Issues and Solutions
-
-### Issue 1: Connection Refused
-
-**Error:**
-
-```
-curl: (7) Failed to connect to localhost port 8000: Connection refused
+ModuleNotFoundError: No module named 'fastapi'
 ```
 
 **Solution:**
 
-- Ensure the server is running: `python webhook.py`
-- Check that port 8000 is not in use by another application
+```bash
+# Activate virtual environment if using one
+source venv/bin/activate  # macOS/Linux
+venv\Scripts\activate     # Windows
 
-### Issue 2: 422 Validation Error
+# Install dependencies
+pip install fastapi uvicorn python-multipart
 
-**Error:**
-
-```json
-{
-  "status": "error",
-  "message": "Invalid payload structure"
-}
+# Verify installation
+pip list | grep fastapi
 ```
 
-**Solution:**
+-----
 
-- Check that all required fields are present
-- Verify field names match exactly (case-sensitive)
-- Ensure timestamp is in ISO 8601 format
-- Confirm event_type is one of the valid values
+## Debugging Techniques
 
-### Issue 3: Database Locked
+### 1. Enable Detailed Logging
 
-**Error in logs:**
+The service logs to `webhook.log` and console by default.
 
-```
-ERROR - Error processing event: database is locked
-```
-
-**Solution:**
-
-- Close any SQLite browser tools accessing the database
-- Check file permissions on `appointments.db`
-- Restart the server
-
-### Issue 4: Invalid JSON
-
-**Error:**
-
-```
-Expecting ',' delimiter
-```
-
-**Solution:**
-
-- Validate JSON syntax using a JSON validator
-- Check for missing commas, brackets, or quotes
-- Ensure proper escaping of special characters
-
-## Database Inspection
-
-### Using SQLite CLI
+**View Logs:**
 
 ```bash
+# Watch logs in real-time
+tail -f webhook.log
+
+# Search for specific request
+grep "A12345" webhook.log
+
+# View recent errors
+grep "ERROR" webhook.log | tail -20
+```
+
+**Log Entries Include:**
+
+- Request ID (for tracking)
+- Full payload received
+- Validation results
+- Database operations
+- Error stack traces
+
+### 2. Inspect the Database
+
+```bash
+# Open database
 sqlite3 appointments.db
 
 # View all events
 SELECT * FROM appointment_events;
 
-# View recent events
-SELECT event_type, appointment_id, received_at 
-FROM appointment_events 
-ORDER BY received_at DESC 
-LIMIT 10;
-
 # Count events by type
-SELECT event_type, COUNT(*) as count 
+SELECT event_type, COUNT(*) 
 FROM appointment_events 
 GROUP BY event_type;
+
+# Find specific appointment
+SELECT * FROM appointment_events 
+WHERE appointment_id = 'A12345';
+
+# View recent events
+SELECT * FROM appointment_events 
+ORDER BY received_at DESC 
+LIMIT 10;
 
 # Exit
 .quit
 ```
 
-### Reset Database
+### 3. Test with Minimal Payload
+
+Start with the simplest possible valid payload:
 
 ```bash
-# Stop the server first
-rm appointments.db
-
-# Restart the server - it will recreate the database
-python webhook.py
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": "TEST",
+    "patient_id": "TEST",
+    "timestamp": "2025-01-10T12:00:00Z"
+  }'
 ```
 
-## Performance Testing
+Then gradually add fields to isolate the problem.
 
-### Load Testing with Apache Bench
+### 4. Use Request ID for Tracking
+
+Every response includes a `request_id`. Use it to find the request in logs:
 
 ```bash
-# Install Apache Bench (if needed)
-# Ubuntu: sudo apt-get install apache2-utils
-# Mac: brew install apache-bench
+# Response includes:
+# "request_id": "2025-01-10T14:23:15.123456"
 
-# Test 100 requests with 10 concurrent connections
-ab -n 100 -c 10 -p payload.json -T application/json \
-  http://localhost:8000/webhook/appointment
+# Search logs
+grep "2025-01-10T14:23:15.123456" webhook.log
 ```
 
-**payload.json:**
+### 5. Validate JSON Before Sending
 
-```json
+```bash
+# Create a file with your JSON
+cat > test.json << 'EOF'
 {
   "event_type": "appointment.scheduled",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z",
-  "notes": "Load test"
+  "appointment_id": "A001",
+  "patient_id": "P001",
+  "timestamp": "2025-01-10T12:30:00Z"
 }
+EOF
+
+# Validate it
+cat test.json | python -m json.tool
+
+# Send it
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d @test.json
 ```
 
-## Debugging Tips
-
-1. **Enable Detailed Logging**: Set log level to DEBUG in webhook.py
-1. **Use Interactive Docs**: Visit `/docs` for built-in testing interface
-1. **Check Raw Logs**: Review `webhook_events.log` for detailed error messages
-1. **Validate JSON**: Use online JSON validators before sending requests
-1. **Test Incrementally**: Start with minimal payload, then add optional fields
-1. **Monitor Database**: Query SQLite to confirm events are being stored
-
-## Environment Variables (Future)
-
-For production deployment, consider using environment variables:
+### 6. Check Service Status
 
 ```bash
-export WEBHOOK_DB_PATH=/path/to/production.db
-export WEBHOOK_LOG_LEVEL=INFO
-export WEBHOOK_PORT=8000
+# Is Python running?
+ps aux | grep webhook.py
+
+# What port is it on?
+lsof -i :8000  # macOS/Linux
+netstat -ano | findstr :8000  # Windows
+
+# Any errors on startup?
+cat webhook.log | grep ERROR
+```
+
+-----
+
+## Advanced Debugging
+
+### Enable Python Debugger
+
+Add breakpoints in `webhook.py`:
+
+```python
+import pdb; pdb.set_trace()  # Add this line where you want to break
+```
+
+### Test with Python Requests
+
+```python
+import requests
+import json
+
+url = "http://localhost:8000/webhook/appointments"
+payload = {
+    "event_type": "appointment.scheduled",
+    "appointment_id": "DEBUG001",
+    "patient_id": "P001",
+    "timestamp": "2025-01-10T12:30:00Z"
+}
+
+response = requests.post(url, json=payload)
+print(f"Status: {response.status_code}")
+print(f"Response: {json.dumps(response.json(), indent=2)}")
+```
+
+### Check Server Performance
+
+```bash
+# CPU usage
+top | grep python
+
+# Memory usage
+ps aux | grep python | awk '{print $4, $11}'
+
+# Database size
+ls -lh appointments.db
+```
+
+-----
+
+## Error Reference Table
+
+|HTTP Code|Error Type        |Common Cause                |Quick Fix                              |
+|---------|------------------|----------------------------|---------------------------------------|
+|400      |Invalid JSON      |Malformed JSON              |Validate JSON syntax                   |
+|400      |Missing fields    |Required field absent       |Add missing fields                     |
+|400      |Invalid type      |Wrong field type            |Check all fields are strings           |
+|400      |Invalid event_type|Wrong event type            |Use valid event type                   |
+|400      |Invalid timestamp |Wrong timestamp format      |Use ISO 8601 format                    |
+|400      |Empty ID          |Empty appointment/patient ID|Provide non-empty IDs                  |
+|409      |Duplicate         |Same ID + timestamp         |Change timestamp or consider it success|
+|500      |Server error      |Internal error              |Check logs, contact support            |
+
+-----
+
+## Getting Help
+
+### Self-Service
+
+1. ✅ Check this debugging guide
+1. ✅ Review `webhook.log` for errors
+1. ✅ Inspect database: `sqlite3 appointments.db`
+1. ✅ Test with minimal payload
+1. ✅ Validate JSON syntax
+
+### Contact Support
+
+If you still need help, provide:
+
+1. **Request ID** from error response
+1. **Full error message** from response
+1. **Relevant log entries** from `webhook.log`
+1. **Sample payload** that’s failing (sanitized if needed)
+1. **Steps to reproduce** the issue
+
+**Format:**
+
+```
+Subject: Webhook Error - Request ID: 2025-01-10T14:23:15.123456
+
+Description:
+Getting 400 error when sending appointment event.
+
+Request ID: 2025-01-10T14:23:15.123456
+
+Payload (sanitized):
+{
+  "event_type": "appointment.scheduled",
+  "appointment_id": "XXX",
+  "patient_id": "YYY",
+  "timestamp": "2025-01-10T12:30:00Z"
+}
+
+Error Message:
+"Missing required fields: patient_id"
+
+Log Entry:
+[2025-01-10 14:23:15,123] ERROR - Validation failed...
+```
+
+-----
+
+## Prevention Checklist
+
+Before sending events, verify:
+
+- [ ] Service is running (`curl http://localhost:8000/`)
+- [ ] JSON is valid (`python -m json.tool`)
+- [ ] All required fields present
+- [ ] All fields are strings
+- [ ] `event_type` is one of the three valid values
+- [ ] `timestamp` is ISO 8601 with timezone
+- [ ] IDs are non-empty strings
+- [ ] Error handling implemented in your code
+- [ ] Request ID saved for debugging
+
+-----
+
+## Maintenance
+
+### Clear Old Events
+
+```bash
+# Open database
+sqlite3 appointments.db
+
+# Delete events older than 30 days
+DELETE FROM appointment_events 
+WHERE received_at < datetime('now', '-30 days');
+
+# Vacuum to reclaim space
+VACUUM;
+```
+
+### Rotate Logs
+
+```bash
+# Backup current log
+cp webhook.log webhook.log.backup
+
+# Clear log (service will create new one)
+> webhook.log
+```
+
+### Health Check Script
+
+```bash
+#!/bin/bash
+# health_check.sh
+
+response=$(curl -s http://localhost:8000/)
+status=$(echo $response | grep -o '"status":"running"')
+
+if [ -n "$status" ]; then
+    echo "✓ Service is healthy"
+    exit 0
+else
+    echo "✗ Service is down"
+    exit 1
+fi
 ```
