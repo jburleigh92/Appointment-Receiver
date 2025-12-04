@@ -1,122 +1,366 @@
-# Customer Integration Guide
+# Healthcare Appointment Webhook API
 
-## Overview
+## Customer Integration Guide
 
-This webhook endpoint receives appointment events from your healthcare system. When an appointment event occurs (scheduled, cancelled, rescheduled, etc.), send a POST request to our webhook URL.
+This document provides everything you need to integrate with our Healthcare Appointment Webhook API.
 
-## Webhook URL
+-----
+
+## Base URL
 
 ```
-POST https://your-domain.com/webhook/appointment
+http://localhost:8000
 ```
+
+For production, your dedicated endpoint URL will be provided separately.
+
+-----
 
 ## Authentication
 
-*[Add your authentication method here - API keys, OAuth, etc.]*
+**Current:** No authentication required (development environment)
 
-## Request Format
+**Production:** API key authentication via `X-API-Key` header (details provided upon deployment)
 
-### Headers
+-----
 
-```
+## Webhook Endpoint
+
+### Send Appointment Event
+
+**Endpoint:** `POST /webhook/appointments`
+
+**Description:** Submit appointment events (scheduled, cancelled, or updated) to our system for processing.
+
+#### Request Headers
+
+```http
 Content-Type: application/json
 ```
 
-### Payload Structure
+#### Request Body
 
-```json
-{
-  "event_type": "appointment.scheduled",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z",
-  "notes": "Annual physical"
-}
-```
+|Field           |Type  |Required|Description                                     |Example                  |
+|----------------|------|--------|------------------------------------------------|-------------------------|
+|`event_type`    |string|✅ Yes   |Type of appointment event                       |`"appointment.scheduled"`|
+|`appointment_id`|string|✅ Yes   |Your unique appointment identifier              |`"A12345"`               |
+|`patient_id`    |string|✅ Yes   |Your unique patient identifier                  |`"P8765"`                |
+|`timestamp`     |string|✅ Yes   |When the event occurred (ISO 8601 with timezone)|`"2025-01-10T12:30:00Z"` |
+|`notes`         |string|❌ No    |Additional information about the appointment    |`"Annual physical"`      |
 
-## Required Fields
+#### Valid Event Types
 
-|Field           |Type  |Required|Description                           |Constraints                                     |
-|----------------|------|--------|--------------------------------------|------------------------------------------------|
-|`event_type`    |string|Yes     |Type of appointment event             |Must be one of the valid event types (see below)|
-|`appointment_id`|string|Yes     |Unique identifier for the appointment |1-50 characters                                 |
-|`patient_id`    |string|Yes     |Unique identifier for the patient     |1-50 characters                                 |
-|`timestamp`     |string|Yes     |When the event occurred               |ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)          |
-|`notes`         |string|No      |Additional information about the event|Max 1000 characters                             |
+|Event Type             |When to Use                          |
+|-----------------------|-------------------------------------|
+|`appointment.scheduled`|When a new appointment is created    |
+|`appointment.cancelled`|When an appointment is cancelled     |
+|`appointment.updated`  |When appointment details are modified|
 
-## Valid Event Types
+#### Request Example
 
-Your system should send one of these event types:
-
-|Event Type               |Description              |When to Send                              |
-|-------------------------|-------------------------|------------------------------------------|
-|`appointment.scheduled`  |New appointment created  |When a patient books an appointment       |
-|`appointment.cancelled`  |Appointment was cancelled|When a patient or provider cancels        |
-|`appointment.rescheduled`|Appointment time changed |When an appointment is moved to a new time|
-|`appointment.completed`  |Appointment finished     |After the appointment concludes           |
-|`appointment.no_show`    |Patient didn’t attend    |When a patient misses their appointment   |
-
-## Timestamp Format
-
-Use ISO 8601 format with timezone:
-
-**Valid Examples:**
-
-- `2025-01-10T12:30:00Z` (UTC)
-- `2025-01-10T12:30:00+00:00` (UTC with offset)
-- `2025-01-10T08:30:00-04:00` (Eastern Time)
-
-**Invalid Examples:**
-
-- `01/10/2025 12:30 PM` ❌
-- `2025-01-10 12:30:00` ❌
-- `1704888600` ❌ (Unix timestamp)
-
-## Response Format
-
-### Success Response (201 Created)
-
-```json
-{
-  "status": "success",
-  "message": "Event received and stored successfully",
-  "event_id": 1,
-  "received_at": "2025-12-03T10:15:30.123456",
-  "data": {
+```bash
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
     "event_type": "appointment.scheduled",
     "appointment_id": "A12345",
-    "patient_id": "P8765"
-  }
-}
+    "patient_id": "P8765",
+    "timestamp": "2025-01-10T12:30:00Z",
+    "notes": "Annual physical examination"
+  }'
 ```
 
-### Error Response (422 Unprocessable Entity)
+#### Success Response
+
+**Status Code:** `200 OK`
 
 ```json
 {
-  "status": "error",
-  "message": "Invalid payload structure",
-  "errors": [
-    {
-      "loc": ["body", "appointment_id"],
-      "msg": "field required",
-      "type": "value_error.missing"
-    }
-  ]
+  "status": "accepted",
+  "message": "Appointment event received and stored",
+  "event_id": 1,
+  "appointment_id": "A12345",
+  "request_id": "2025-01-10T14:23:15.123456"
 }
 ```
 
-## Integration Examples
+**Response Fields:**
+
+- `status` - Always “accepted” for successful requests
+- `message` - Human-readable confirmation message
+- `event_id` - Our internal ID for this event (for support queries)
+- `appointment_id` - Echo of your appointment ID
+- `request_id` - Unique request identifier (save this for debugging)
+
+-----
+
+## Error Responses
+
+All error responses follow this format:
+
+```json
+{
+  "error": "Error Category",
+  "message": "Detailed description of what went wrong",
+  "request_id": "2025-01-10T14:23:15.123456"
+}
+```
+
+### 400 Bad Request
+
+**When:** Invalid JSON or validation failure
+
+#### Example 1: Missing Required Field
+
+```bash
+# Request missing patient_id
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": "A12345",
+    "timestamp": "2025-01-10T12:30:00Z"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "error": "Validation failed",
+  "message": "Missing required fields: patient_id",
+  "request_id": "2025-01-10T14:23:15.123456"
+}
+```
+
+#### Example 2: Invalid Event Type
+
+```bash
+# Using non-existent event type
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.deleted",
+    "appointment_id": "A12345",
+    "patient_id": "P8765",
+    "timestamp": "2025-01-10T12:30:00Z"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "error": "Validation failed",
+  "message": "Invalid event_type 'appointment.deleted'. Must be one of: appointment.cancelled, appointment.scheduled, appointment.updated",
+  "request_id": "2025-01-10T14:23:15.123456"
+}
+```
+
+#### Example 3: Invalid Timestamp
+
+```bash
+# Missing time portion
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": "A12345",
+    "patient_id": "P8765",
+    "timestamp": "2025-01-10"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "error": "Validation failed",
+  "message": "Invalid timestamp format. Must be ISO 8601 format (e.g., '2025-01-10T12:30:00Z'). Error: Invalid isoformat string: '2025-01-10'",
+  "request_id": "2025-01-10T14:23:15.123456"
+}
+```
+
+#### Example 4: Wrong Data Type
+
+```bash
+# appointment_id is a number instead of string
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": 12345,
+    "patient_id": "P8765",
+    "timestamp": "2025-01-10T12:30:00Z"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "error": "Validation failed",
+  "message": "Field 'appointment_id' must be a string, got int",
+  "request_id": "2025-01-10T14:23:15.123456"
+}
+```
+
+### 409 Conflict
+
+**When:** Duplicate event detected (same appointment_id + timestamp)
+
+```bash
+# Send the same event twice
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": "A12345",
+    "patient_id": "P8765",
+    "timestamp": "2025-01-10T12:30:00Z"
+  }'
+
+# Second request returns 409
+```
+
+**Response:**
+
+```json
+{
+  "error": "Duplicate event",
+  "message": "Event for appointment A12345 at 2025-01-10T12:30:00Z already exists",
+  "request_id": "2025-01-10T14:23:15.234567"
+}
+```
+
+**Note:** This is by design to ensure idempotency. If you need to update an appointment, use `event_type: "appointment.updated"` with a new timestamp.
+
+### 500 Internal Server Error
+
+**When:** Unexpected system error on our side
+
+```json
+{
+  "error": "Internal server error",
+  "message": "An unexpected error occurred while processing the event",
+  "request_id": "2025-01-10T14:23:15.123456"
+}
+```
+
+**Action:** Contact support with the `request_id` for investigation.
+
+-----
+
+## Integration Best Practices
+
+### 1. Timestamp Format
+
+✅ **Always use ISO 8601 with timezone:**
+
+```json
+"timestamp": "2025-01-10T12:30:00Z"        // ✓ Correct (UTC)
+"timestamp": "2025-01-10T12:30:00-05:00"   // ✓ Correct (EST)
+```
+
+❌ **Avoid these formats:**
+
+```json
+"timestamp": "2025-01-10"                  // ✗ Missing time
+"timestamp": "01/10/2025 12:30 PM"        // ✗ Wrong format
+"timestamp": "2025-01-10 12:30:00"        // ✗ Missing timezone
+```
+
+### 2. Error Handling
+
+Always check the HTTP status code:
+
+```python
+# Python example
+response = requests.post(url, json=payload)
+
+if response.status_code == 200:
+    # Success - event accepted
+    event_id = response.json()["event_id"]
+    
+elif response.status_code == 400:
+    # Validation error - fix the payload
+    error = response.json()["message"]
+    log.error(f"Invalid payload: {error}")
+    
+elif response.status_code == 409:
+    # Duplicate - this event was already sent
+    log.info("Event already processed, skipping")
+    
+elif response.status_code == 500:
+    # Server error - retry with exponential backoff
+    request_id = response.json()["request_id"]
+    log.error(f"Server error, request_id: {request_id}")
+    # Implement retry logic
+```
+
+### 3. Retry Logic
+
+**For 500 errors:**
+
+- Retry with exponential backoff
+- Maximum 3 retry attempts
+- Save `request_id` for support queries
+
+**For 400 errors:**
+
+- Do NOT retry (invalid data)
+- Log the error
+- Fix the payload
+
+**For 409 errors:**
+
+- Do NOT retry (already processed)
+- Consider it a success
+
+### 4. Idempotency
+
+The API guarantees idempotency based on `appointment_id` + `timestamp`:
+
+✅ **Safe to send:**
+
+```json
+// First event
+{"appointment_id": "A001", "timestamp": "2025-01-10T10:00:00Z", ...}
+
+// Different timestamp - new event
+{"appointment_id": "A001", "timestamp": "2025-01-10T11:00:00Z", ...}
+```
+
+❌ **Will return 409:**
+
+```json
+// Same appointment_id AND timestamp
+{"appointment_id": "A001", "timestamp": "2025-01-10T10:00:00Z", ...}
+{"appointment_id": "A001", "timestamp": "2025-01-10T10:00:00Z", ...}
+```
+
+### 5. Rate Limiting
+
+**Current:** No rate limits (development)
+
+**Production:**
+
+- 1000 requests per minute per API key
+- Burst allowance of 100 requests
+- 429 status code when exceeded
+
+-----
+
+## Code Examples
 
 ### Python
 
 ```python
 import requests
-import json
 from datetime import datetime
 
 def send_appointment_event(event_type, appointment_id, patient_id, notes=None):
-    url = "https://your-domain.com/webhook/appointment"
+    url = "http://localhost:8000/webhook/appointments"
     
     payload = {
         "event_type": event_type,
@@ -126,21 +370,30 @@ def send_appointment_event(event_type, appointment_id, patient_id, notes=None):
         "notes": notes
     }
     
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
-    response = requests.post(url, json=payload, headers=headers)
-    
-    if response.status_code == 201:
-        print("Event sent successfully!")
-        return response.json()
-    else:
-        print(f"Error: {response.status_code}")
-        print(response.json())
-        return None
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        print(f"✓ Event sent successfully: {result['event_id']}")
+        return result
+        
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 400:
+            error = e.response.json()
+            print(f"✗ Validation error: {error['message']}")
+        elif e.response.status_code == 409:
+            print(f"✓ Event already processed (duplicate)")
+        elif e.response.status_code == 500:
+            error = e.response.json()
+            print(f"✗ Server error: {error['request_id']}")
+        raise
+        
+    except requests.exceptions.RequestException as e:
+        print(f"✗ Network error: {str(e)}")
+        raise
 
-# Example usage
+# Usage
 send_appointment_event(
     event_type="appointment.scheduled",
     appointment_id="A12345",
@@ -149,13 +402,13 @@ send_appointment_event(
 )
 ```
 
-### JavaScript/Node.js
+### JavaScript (Node.js)
 
 ```javascript
 const axios = require('axios');
 
 async function sendAppointmentEvent(eventType, appointmentId, patientId, notes = null) {
-  const url = 'https://your-domain.com/webhook/appointment';
+  const url = 'http://localhost:8000/webhook/appointments';
   
   const payload = {
     event_type: eventType,
@@ -166,22 +419,30 @@ async function sendAppointmentEvent(eventType, appointmentId, patientId, notes =
   };
   
   try {
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    console.log('Event sent successfully!');
+    const response = await axios.post(url, payload);
+    console.log(`✓ Event sent successfully: ${response.data.event_id}`);
     return response.data;
+    
   } catch (error) {
-    console.error('Error:', error.response.status);
-    console.error(error.response.data);
-    return null;
+    if (error.response) {
+      const status = error.response.status;
+      const data = error.response.data;
+      
+      if (status === 400) {
+        console.error(`✗ Validation error: ${data.message}`);
+      } else if (status === 409) {
+        console.log('✓ Event already processed (duplicate)');
+      } else if (status === 500) {
+        console.error(`✗ Server error: ${data.request_id}`);
+      }
+    } else {
+      console.error(`✗ Network error: ${error.message}`);
+    }
+    throw error;
   }
 }
 
-// Example usage
+// Usage
 sendAppointmentEvent(
   'appointment.scheduled',
   'A12345',
@@ -193,101 +454,135 @@ sendAppointmentEvent(
 ### cURL
 
 ```bash
-curl -X POST https://your-domain.com/webhook/appointment \
+#!/bin/bash
+
+# Send appointment event
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"event_type\": \"appointment.scheduled\",
+    \"appointment_id\": \"A12345\",
+    \"patient_id\": \"P8765\",
+    \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+    \"notes\": \"Annual physical\"
+  }"
+```
+
+-----
+
+## Testing Your Integration
+
+### 1. Health Check
+
+Verify the service is running:
+
+```bash
+curl http://localhost:8000/
+```
+
+Expected response:
+
+```json
+{
+  "service": "Healthcare Appointment Webhook",
+  "status": "running",
+  "timestamp": "2025-01-10T14:23:15.123456",
+  "version": "1.0.0"
+}
+```
+
+### 2. Test Valid Event
+
+```bash
+curl -X POST http://localhost:8000/webhook/appointments \
   -H "Content-Type: application/json" \
   -d '{
     "event_type": "appointment.scheduled",
-    "appointment_id": "A12345",
-    "patient_id": "P8765",
+    "appointment_id": "TEST-001",
+    "patient_id": "TEST-P001",
     "timestamp": "2025-01-10T12:30:00Z",
-    "notes": "Annual physical"
+    "notes": "Test appointment"
   }'
 ```
 
-## Common Integration Scenarios
+### 3. Test Error Handling
 
-### Scenario 1: Patient Books Appointment
-
-```json
-{
-  "event_type": "appointment.scheduled",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z",
-  "notes": "Initial consultation - new patient"
-}
+```bash
+# Test missing field
+curl -X POST http://localhost:8000/webhook/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "appointment.scheduled",
+    "appointment_id": "TEST-002"
+  }'
 ```
 
-### Scenario 2: Patient Cancels
-
-```json
-{
-  "event_type": "appointment.cancelled",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-09T08:15:00Z",
-  "notes": "Patient called to cancel due to conflict"
-}
-```
-
-### Scenario 3: Appointment Rescheduled
-
-```json
-{
-  "event_type": "appointment.rescheduled",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-15T14:00:00Z",
-  "notes": "Moved from Jan 10 to Jan 15 per patient request"
-}
-```
-
-### Scenario 4: Appointment Completed
-
-```json
-{
-  "event_type": "appointment.completed",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T13:00:00Z",
-  "notes": "Routine checkup completed successfully"
-}
-```
-
-### Scenario 5: Patient No-Show
-
-```json
-{
-  "event_type": "appointment.no_show",
-  "appointment_id": "A12345",
-  "patient_id": "P8765",
-  "timestamp": "2025-01-10T12:30:00Z",
-  "notes": "Patient did not arrive for scheduled appointment"
-}
-```
-
-## Error Handling Best Practices
-
-1. **Retry Logic**: Implement exponential backoff for failed requests
-1. **Validate Before Sending**: Check required fields before making the request
-1. **Log Errors**: Keep records of failed webhook deliveries
-1. **Monitor Success Rate**: Track delivery success rates over time
-
-## Rate Limits
-
-*[Add your rate limiting information here]*
+-----
 
 ## Support
 
-If you encounter issues integrating with our webhook:
+### Debugging
 
-1. Verify your payload matches the required format
-1. Check that all required fields are present
-1. Ensure timestamp is in ISO 8601 format
-1. Confirm event_type is one of the valid values
+If you encounter issues:
 
-For additional support, contact: *[your support contact]*
+1. **Save the `request_id`** from error responses
+1. **Check the error message** for specific details
+1. **Verify your payload** matches the schema
+1. **Test with cURL** to isolate client issues
+
+### Contact
+
+**Email:** support@example.com  
+**Documentation:** See `debugging.md` for common issues  
+**Schema Reference:** See `schema.json` for full validation rules
+
+### SLA
+
+**Development:** Best effort support  
+**Production:**
+
+- Response time: < 4 hours
+- Resolution time: < 24 hours
+- Uptime: 99.9%
+
+-----
 
 ## Changelog
 
-*[Document any changes to the webhook API]*
+### v1.0.0 (Current)
+
+- Initial release
+- Support for scheduled, cancelled, and updated events
+- Duplicate detection
+- Request ID tracking
+
+-----
+
+## Appendix
+
+### Complete Validation Rules
+
+1. ✓ Request body must be valid JSON
+1. ✓ All required fields must be present
+1. ✓ Fields must have correct types (all strings)
+1. ✓ Required fields cannot be null
+1. ✓ `event_type` must be one of: `appointment.scheduled`, `appointment.cancelled`, `appointment.updated`
+1. ✓ `timestamp` must be valid ISO 8601 with timezone
+1. ✓ `appointment_id` cannot be empty or whitespace
+1. ✓ `patient_id` cannot be empty or whitespace
+1. ✓ Combination of `appointment_id` + `timestamp` must be unique
+1. ✓ `notes` is optional, but if provided must be a string
+
+### Timezone Recommendations
+
+Always send timestamps in UTC (with `Z` suffix) to avoid timezone conversion issues:
+
+```json
+"timestamp": "2025-01-10T12:30:00Z"
+```
+
+If you must use local timezone, include offset:
+
+```json
+"timestamp": "2025-01-10T07:30:00-05:00"  // EST
+```
